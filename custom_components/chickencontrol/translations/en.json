@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to ChickenControl",
+        "description": "Enter the connection details for the chickenctl daemon running on your Raspberry Pi.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "token": "API Token",
+          "verify_ssl": "Verify TLS certificate"
+        },
+        "data_description": {
+          "host": "Hostname or IP address of the Raspberry Pi",
+          "token": "The Bearer token set in doors.conf [server] token",
+          "verify_ssl": "Uncheck if using a self-signed certificate and you have not added it to Home Assistant's trust store"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to chickenctl — check host, port, and that the daemon is running",
+      "invalid_auth": "Invalid API token",
+      "unknown": "Unexpected error — check the Home Assistant log"
+    },
+    "abort": {
+      "already_configured": "This chickenctl instance is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Door sensor mapping",
+        "description": "Optionally map each door to a physical open/closed sensor already in Home Assistant. Configured doors: {doors}.",
+        "data": {
+          "sensor_": "Physical sensor"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,101 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          chickenctl
+# Required-Start:    $remote_fs $syslog $network
+# Required-Stop:     $remote_fs $syslog $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Chicken door HTTPS control daemon
+# Description:       Exposes a TLS-protected REST API for manual control
+#                    of chicken coop doors via Home Assistant.
+### END INIT INFO
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+DESC="Chicken door control daemon"
+NAME=chickenctl
+DAEMON=/usr/local/bin/chickenctl
+PIDFILE=/var/run/$NAME.pid
+LOGFILE=/var/log/$NAME.log
+SCRIPTNAME=/etc/init.d/$NAME
+
+# Source optional defaults (e.g. override DAEMON_ARGS here)
+[ -r /etc/default/$NAME ] && . /etc/default/$NAME
+
+# LSB functions
+. /lib/init/vars.sh
+. /lib/lsb/init-functions
+
+do_start() {
+    # Return:
+    #   0  — started or already running
+    #   1  — could not be started
+    start-stop-daemon --start --quiet \
+        --pidfile "$PIDFILE" --make-pidfile \
+        --background --no-close \
+        --startas "$DAEMON" \
+        --test > /dev/null || return 0
+
+    start-stop-daemon --start --quiet \
+        --pidfile "$PIDFILE" --make-pidfile \
+        --background --no-close \
+        --startas "$DAEMON" \
+        -- $DAEMON_ARGS >> "$LOGFILE" 2>&1 || return 1
+}
+
+do_stop() {
+    # Return:
+    #   0  — stopped
+    #   1  — was not running
+    #   2  — could not be stopped
+    start-stop-daemon --stop --quiet \
+        --retry=TERM/30/KILL/5 \
+        --pidfile "$PIDFILE" \
+        --name "$NAME"
+    RETVAL=$?
+    [ "$RETVAL" -eq 0 ] && rm -f "$PIDFILE"
+    return "$RETVAL"
+}
+
+case "$1" in
+    start)
+        log_daemon_msg "Starting $DESC" "$NAME"
+        do_start
+        case "$?" in
+            0) log_end_msg 0 ;;
+            1) log_end_msg 1 ;;
+        esac
+        ;;
+    stop)
+        log_daemon_msg "Stopping $DESC" "$NAME"
+        do_stop
+        case "$?" in
+            0|1) log_end_msg 0 ;;
+            2)   log_end_msg 1 ;;
+        esac
+        ;;
+    restart)
+        log_daemon_msg "Restarting $DESC" "$NAME"
+        do_stop
+        case "$?" in
+            0|1)
+                do_start
+                case "$?" in
+                    0) log_end_msg 0 ;;
+                    *) log_end_msg 1 ;;
+                esac
+                ;;
+            *)
+                log_end_msg 1
+                ;;
+        esac
+        ;;
+    status)
+        status_of_proc -p "$PIDFILE" "$DAEMON" "$NAME" && exit 0 || exit $?
+        ;;
+    *)
+        echo "Usage: $SCRIPTNAME {start|stop|restart|status}" >&2
+        exit 3
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,26 @@
+[Unit]
+Description=Chicken door HTTPS control daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/chickenctl
+Restart=on-failure
+RestartSec=5s
+
+# Log to the journal; view with: journalctl -u chickenctl -f
+StandardOutput=journal
+StandardError=journal
+
+# Run as root for GPIO access.
+# Alternative: create a 'chickendoor' user, add to the 'gpio' group,
+# and set User=chickendoor here.
+User=root
+
+# Protect the filesystem from writes outside expected paths
+ReadWritePaths=/run /var/lib/chickendoor
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

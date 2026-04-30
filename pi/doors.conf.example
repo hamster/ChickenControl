@@ -1,0 +1,65 @@
+# /etc/chickendoor/doors.conf
+#
+# Configuration for chickenctl daemon and chickendoor CLI.
+# Install to /etc/chickendoor/doors.conf (chmod 640, chown root:root).
+#
+# [server] is reserved for daemon settings.
+# Every other section defines one door.  The section name is the door's
+# identifier used in CLI commands and HTTP API paths.
+
+# ---------------------------------------------------------------------------
+[server]
+# ---------------------------------------------------------------------------
+
+# Address and port for the HTTPS API.
+# Bind to a specific interface IP to restrict access further.
+host  = 0.0.0.0
+port  = 8443
+
+# TLS certificate and private key (PEM format).
+# Generate a self-signed cert valid for 10 years:
+#
+#   openssl req -x509 -newkey rsa:2048 -nodes \
+#     -keyout /etc/chickendoor/server.key \
+#     -out    /etc/chickendoor/server.crt \
+#     -days 3650 -subj "/CN=chickencoop.local"
+#
+# Copy server.crt to the Home Assistant host so the integration can verify it.
+cert  = /etc/chickendoor/server.crt
+key   = /etc/chickendoor/server.key
+
+# Shared Bearer token.  Every API request must include:
+#   Authorization: Bearer <token>
+#
+# Generate a token:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+token = REPLACE_WITH_GENERATED_TOKEN
+
+# ---------------------------------------------------------------------------
+[coop]
+# ---------------------------------------------------------------------------
+# Chicken coop entry door.
+#
+# relay_a / relay_b are BCM GPIO pin numbers (the number after "GPIO" in the
+# Pi pinout, e.g. pinout.xyz).  Run "gpio readall" on the Pi to map wiringPi
+# numbers to BCM numbers if needed.
+#
+# OPEN  command: relay_a HIGH + relay_b LOW  for open_ms milliseconds
+# CLOSE command: relay_a LOW  + relay_b HIGH for close_ms milliseconds
+#
+# If the door moves the wrong direction, swap relay_a and relay_b.
+
+relay_a  = 22       # BCM 22 (wiringPi 3,  physical pin 15)
+relay_b  = 6        # BCM 6  (wiringPi 22, physical pin 31)
+open_ms  = 30000    # milliseconds to hold relay for a full open travel
+close_ms = 30000    # milliseconds to hold relay for a full close travel
+
+# ---------------------------------------------------------------------------
+[run]
+# ---------------------------------------------------------------------------
+# Outdoor run gate (currently disabled in crontab).
+
+relay_a  = 26       # BCM 26 (wiringPi 25, physical pin 37)
+relay_b  = 4        # BCM 4  (wiringPi 7,  physical pin 7)
+open_ms  = 30000
+close_ms = 35000
