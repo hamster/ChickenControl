@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -39,6 +39,7 @@ class DoorSensor(CoordinatorEntity[ChickenControlCoordinator], SensorEntity):
     """
 
     _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.ENUM
 
     def __init__(
         self,

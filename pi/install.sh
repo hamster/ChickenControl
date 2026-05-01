@@ -29,19 +29,8 @@ check_root() {
 
 install_deps() {
     echo "==> Installing Python dependencies..."
-    pip3 install --quiet flask
-
-    # Detect Pi 5 (needs rpi-lgpio instead of RPi.GPIO)
-    PI_MODEL="$(cat /proc/device-tree/model 2>/dev/null || true)"
-    case "$PI_MODEL" in
-        *"Raspberry Pi 5"*)
-            echo "    Detected Pi 5 — installing rpi-lgpio"
-            pip3 install --quiet rpi-lgpio
-            ;;
-        *)
-            pip3 install --quiet RPi.GPIO 2>/dev/null || true
-            ;;
-    esac
+    # --break-system-packages is required on Bookworm/Trixie (PEP 668).
+    pip3 install --quiet --break-system-packages flask waitress rpi-lgpio
 }
 
 create_dirs() {

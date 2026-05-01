@@ -44,7 +44,7 @@ class DoorConfig:
 
 def load_config(path=DEFAULT_CONFIG):
     """Return (RawConfigParser, {name: DoorConfig}).  Raises on missing file."""
-    cfg = configparser.ConfigParser()
+    cfg = configparser.ConfigParser(inline_comment_prefixes=('#',))
     if not cfg.read(path):
         raise FileNotFoundError(f"Config not found: {path}")
     doors = {}

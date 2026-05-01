@@ -7,6 +7,8 @@ Type=simple
 ExecStart=/usr/local/bin/chickenctl
 Restart=on-failure
 RestartSec=5s
+WorkingDirectory=/tmp
+PrivateTmp=true
 
 # Log to the journal; view with: journalctl -u chickenctl -f
 StandardOutput=journal

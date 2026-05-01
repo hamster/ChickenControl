@@ -109,29 +109,41 @@ class ChickenControlOptionsFlow(OptionsFlow):
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
+        self._pending: list[str] = []
+        self._new_options: dict[str, Any] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> dict:
+        self._pending = list(self._entry.data[CONF_DOORS])
+        self._new_options = {}
+        return self._show_door_form()
+
+    async def async_step_door(
+        self, user_input: dict[str, Any] | None = None
+    ) -> dict:
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            door = self._pending.pop(0)
+            sensor = user_input.get("sensor")
+            if sensor:
+                self._new_options[f"{OPT_SENSOR_PREFIX}{door}"] = sensor
 
-        doors: list[str] = self._entry.data[CONF_DOORS]
-        current = self._entry.options
+        if not self._pending:
+            return self.async_create_entry(title="", data=self._new_options)
+        return self._show_door_form()
 
-        schema: dict = {}
-        for door in doors:
-            key = f"{OPT_SENSOR_PREFIX}{door}"
-            schema[
-                vol.Optional(key, default=current.get(key, ""))
-            ] = EntitySelector(
+    def _show_door_form(self) -> dict:
+        door = self._pending[0]
+        current = self._entry.options.get(f"{OPT_SENSOR_PREFIX}{door}")
+        schema = vol.Schema(
+            {vol.Optional("sensor"): EntitySelector(
                 EntitySelectorConfig(domain=["binary_sensor", "sensor"])
-            )
-
+            )}
+        )
+        if current:
+            schema = self.add_suggested_values_to_schema(schema, {"sensor": current})
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(schema),
-            description_placeholders={
-                "doors": ", ".join(doors),
-            },
+            step_id="door",
+            data_schema=schema,
+            description_placeholders={"door": door.capitalize()},
         )

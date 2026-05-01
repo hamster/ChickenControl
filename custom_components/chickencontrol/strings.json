@@ -28,11 +28,11 @@
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Door sensor mapping",
-        "description": "Optionally map each door to a physical open/closed sensor already in Home Assistant. Configured doors: {doors}.",
+      "door": {
+        "title": "{door} door sensor",
+        "description": "Select a binary or state sensor that reports whether the {door} door is open or closed. Leave blank to rely on chickenctl's last-commanded state.",
         "data": {
-          "sensor_": "Physical sensor"
+          "sensor": "Physical sensor"
         }
       }
     }

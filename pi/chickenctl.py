@@ -20,10 +20,13 @@ import argparse
 import logging
 import os
 import signal
+import socket
+import ssl
 import sys
 import threading
 
 from flask import Flask, jsonify, request
+from waitress import create_server
 
 import door_control
 
@@ -155,16 +158,15 @@ def main():
     log.info("chickenctl starting on %s:%d with doors: %s",
              host, port, ", ".join(_doors))
 
-    # threaded=True lets Flask handle concurrent requests (one per door is typical).
-    # use_reloader=False is required — the reloader forks the process which breaks GPIO.
-    app.run(
-        host=host,
-        port=port,
-        ssl_context=(cert, key),
-        threaded=True,
-        use_reloader=False,
-        debug=False,
-    )
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_ctx.load_cert_chain(cert, key)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
+    sock.bind((host, port))
+    ssl_sock = ssl_ctx.wrap_socket(sock, server_side=True)
+
+    server = create_server(app, sockets=[ssl_sock])
+    server.run()
 
 
 if __name__ == "__main__":
