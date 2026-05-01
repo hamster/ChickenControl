@@ -21,7 +21,7 @@ The Pi operates independently — doors open and close on a solar schedule via [
 ### Software — Raspberry Pi
 
 - Raspberry Pi OS (Bullseye or newer)
-- Python 3.9+, `flask`, `RPi.GPIO` (or `rpi-lgpio` on Pi 5)
+- Python 3.9+, `flask`, `waitress`, `RPi.GPIO` (or `rpi-lgpio` on Pi 5)
 - [sunwait][sunwait] compiled and installed to `/usr/local/bin/sunwait`
 
 ### Software — Home Assistant
@@ -48,7 +48,7 @@ sudo sh pi/install.sh
 
 The installer will:
 
-- Install Python dependencies (`flask`, `RPi.GPIO` / `rpi-lgpio`)
+- Install Python dependencies (`flask`, `waitress`, `RPi.GPIO` / `rpi-lgpio`)
 - Create `/etc/chickendoor/` and `/var/lib/chickendoor/`
 - Install `chickendoor` and `chickenctl` to `/usr/local/bin/`
 - Copy `doors.conf.example` to `/etc/chickendoor/doors.conf`
@@ -181,14 +181,19 @@ After the integration is set up, click **Configure** to open the options flow. F
 
 The integration creates the following entities for each configured door (`coop`, `run`, etc.):
 
-### Buttons
+### Cover
 
-| Entity | Description |
-|--------|-------------|
-| `button.{name}_open` | Sends an open command to the Pi |
-| `button.{name}_close` | Sends a close command to the Pi |
+| Entity | States | Description |
+|--------|--------|-------------|
+| `cover.{name}` | `open` `opening` `closing` `closed` | Door control and status tile |
 
-Pressing a button while the door is already moving will show an error notification in HA.
+The cover entity is the primary interface. It provides a tile card with open, close, and stop buttons and shows the direction of travel while the door is moving.
+
+**Stop button behaviour:**
+- Pressed while **closing** → immediately interrupts the close and reverses to open (emergency override)
+- Pressed while **opening** → no-op (opening is not interrupted by design)
+
+Sending an **open** command while the door is closing also triggers the same reversal — useful from automations or the command line.
 
 ### Sensor
 
@@ -199,8 +204,17 @@ Pressing a button while the door is already moving will show an error notificati
 State priority:
 
 1. **`moving`** — the Pi reports that a relay is currently energised (overrides the physical sensor)
-2. **Physical sensor** (if mapped) — `on` → `open`, `off` → `closed`
+2. **Physical sensor** (if mapped) — `on`/`open` → `open`, `off`/`closed` → `closed`
 3. **Last commanded state** — from the Pi's state file when no physical sensor is mapped
+
+### Buttons
+
+| Entity | Description |
+|--------|-------------|
+| `button.{name}_open` | Sends an open command to the Pi |
+| `button.{name}_close` | Sends a close command to the Pi |
+
+Useful for automations where a direct open or close trigger is cleaner than using the cover entity.
 
 When the Pi is unreachable all entities show as **unavailable**.
 
@@ -221,17 +235,32 @@ See the [crontab setup section](#5-set-up-the-crontab) for full details and buil
 ### Manual override (via Home Assistant)
 
 ```
-HA button press
+HA cover open/close/stop
   └─ POST /door/coop/open   (HTTPS + Bearer token)
        └─ chickenctl daemon
-            └─ background thread: sets GPIO, holds relay for 30 s, clears GPIO
+            └─ background thread: sets GPIO, holds relay for travel duration, clears GPIO
 ```
 
-The daemon returns `202 Accepted` immediately. The coordinator polls `GET /door/coop/status` every 5 seconds and shows `moving` while the lock is held, then `open` or `closed` when the operation completes.
+The daemon returns `202 Accepted` immediately. The coordinator polls `GET /door/coop/status` every 5 seconds. While moving, the status is `opening` or `closing` (direction is tracked). When the operation completes, the status changes to `open` or `closed`.
+
+### Interrupting a close
+
+If an open command is received while the door is closing, the daemon:
+
+1. Signals the close thread to stop
+2. Waits for the relay to de-energise
+3. Pauses 50 ms (relay settling time)
+4. Starts the open operation
+
+The reverse — closing while opening — is rejected with `409 Busy` by design, since an opening door is assumed to be safe.
+
+### Relay safety sequencing
+
+When switching direction, the code always de-energises the active relay before energising the opposite one, with a 50 ms pause in between. Both relays are never energised simultaneously.
 
 ### Concurrency
 
-Both `chickendoor` (cron) and `chickenctl` (daemon) use the same per-door lockfile at `/run/chickendoor-{name}.lock`. If cron fires while a manual command is in progress, `chickendoor` blocks until the lock is released.
+Both `chickendoor` (cron) and `chickenctl` (daemon) use the same per-door lockfile at `/run/chickendoor-{name}.lock`. If cron fires while a manual command is in progress, `chickendoor` routes through the daemon, which applies the same override rules.
 
 ---
 
@@ -248,9 +277,9 @@ Each actuator has two wires. Each wire connects to the COM (moving contact) of o
 ```
       Relay A                  Relay B
 
-  NO ──── +12V            NO ──── +12V
+  NO ──── +12V             NO ──── +12V
   │                        │
-  COM ──── Wire A     Wire B ──── COM
+  COM ──── Wire A          COM ──── Wire B
   │                        │
   NC ──── GND              NC ──── GND
 
@@ -275,20 +304,9 @@ Verified with `gpio readall` on the Pi 3B. All four pins show `Mode=OUT` and `V=
 
 ---
 
-## Versioning
-
-HACS shows update notifications when a new git tag is pushed that matches the `version` field in `manifest.json`:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
----
-
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+GPL 3.0 — see [LICENSE](LICENSE).
 
 [ha]: https://www.home-assistant.io/
 [hacs]: https://hacs.xyz/
