@@ -75,7 +75,7 @@ class DoorSensor(CoordinatorEntity[ChickenControlCoordinator], SensorEntity):
             else "unknown"
         )
 
-        if chickenctl_state == "moving":
+        if chickenctl_state in ("moving", "opening", "closing"):
             return "moving"
 
         physical_id = self._physical_sensor_entity_id
@@ -83,12 +83,15 @@ class DoorSensor(CoordinatorEntity[ChickenControlCoordinator], SensorEntity):
             state = self.hass.states.get(physical_id)
             if state is not None and state.state not in ("unavailable", "unknown"):
                 # binary_sensor: "on" = open, "off" = closed
-                # plain sensor: pass the raw state value through
-                if state.state == "on":
+                # plain sensor: normalise to lowercase and pass through
+                raw = state.state.lower()
+                if raw == "on":
                     return "open"
-                if state.state == "off":
+                if raw == "off":
                     return "closed"
-                return state.state  # forward arbitrary sensor values as-is
+                if raw in DOOR_STATES:
+                    return raw
+                return "unknown"
 
         return chickenctl_state
 

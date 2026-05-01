@@ -59,12 +59,15 @@ def _try_daemon(cfg, command, door_name):
     status_req = urllib.request.Request(
         f"{base}/door/{door_name}/status", headers=headers,
     )
-    while True:
-        with urllib.request.urlopen(status_req, context=ctx, timeout=5) as resp:
-            state = json.loads(resp.read()).get("state")
-        if state != "moving":
-            break
-        time.sleep(0.5)
+    try:
+        while True:
+            with urllib.request.urlopen(status_req, context=ctx, timeout=5) as resp:
+                state = json.loads(resp.read()).get("state")
+            if state not in ("moving", "opening", "closing"):
+                break
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print(f"\n{door_name}: interrupted — door may still be moving", file=sys.stderr)
 
     return True
 

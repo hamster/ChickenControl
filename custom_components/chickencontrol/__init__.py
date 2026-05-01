@@ -15,7 +15,7 @@ from .coordinator import ChickenControlCoordinator
 
 log = logging.getLogger(__name__)
 
-PLATFORMS = ["button", "sensor"]
+PLATFORMS = ["button", "cover", "sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -199,13 +199,15 @@ def operate(door, command, stop_event=None):
             log.info("Opening %s (relay_a=%d HIGH, relay_b=%d LOW, %.1fs)",
                      door.name, door.relay_a, door.relay_b, duration)
             if _HAS_GPIO:
+                GPIO.output(door.relay_b, GPIO.LOW)   # de-energize close relay first
+                time.sleep(0.05)
                 GPIO.output(door.relay_a, GPIO.HIGH)
-                GPIO.output(door.relay_b, GPIO.LOW)
         else:
             log.info("Closing %s (relay_a=%d LOW, relay_b=%d HIGH, %.1fs)",
                      door.name, door.relay_a, door.relay_b, duration)
             if _HAS_GPIO:
-                GPIO.output(door.relay_a, GPIO.LOW)
+                GPIO.output(door.relay_a, GPIO.LOW)   # de-energize open relay first
+                time.sleep(0.05)
                 GPIO.output(door.relay_b, GPIO.HIGH)
 
         interrupted = False
@@ -215,6 +217,7 @@ def operate(door, command, stop_event=None):
             time.sleep(duration)
 
         if not interrupted:
+            log.info("%s %s complete", door.name, command)
             with open(_state_path(door.name), "w") as f:
                 f.write(_STATE_AFTER[command])
 
