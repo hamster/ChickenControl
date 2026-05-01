@@ -30,7 +30,11 @@ check_root() {
 install_deps() {
     echo "==> Installing Python dependencies..."
     # --break-system-packages is required on Bookworm/Trixie (PEP 668).
+<<<<<<< HEAD
     pip3 install --quiet --break-system-packages flask waitress rpi-lgpio
+=======
+    pip3 install --quiet --break-system-packages flask rpi-lgpio
+>>>>>>> 444e9eb52e1b7d9a238895e4e2562540f51b24dc
 }
 
 create_dirs() {
