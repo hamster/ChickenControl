@@ -73,15 +73,18 @@ create_dirs() {
 install_binaries() {
     echo "==> Installing binaries..."
     install -m 755 "$SCRIPT_DIR/door_control.py" "$BIN_DIR/door_control.py"
+    install -m 644 "$SCRIPT_DIR/version.py"      "$BIN_DIR/version.py"
     install -m 755 "$SCRIPT_DIR/chickengate.py"  "$BIN_DIR/chickengate"
     install -m 755 "$SCRIPT_DIR/chickenctl.py"   "$BIN_DIR/chickenctl"
     install -m 755 "$SCRIPT_DIR/chickendoor.py"  "$BIN_DIR/chickendoor"
 
-    # Ensure door_control is importable alongside the installed scripts.
+    # Ensure shared modules are importable alongside the installed scripts.
     SITE_PACKAGES="$(python3 -c 'import site; print(site.getsitepackages()[0])')"
-    if [ ! -f "$SITE_PACKAGES/door_control.py" ]; then
-        ln -sf "$BIN_DIR/door_control.py" "$SITE_PACKAGES/door_control.py"
-    fi
+    for mod in door_control version; do
+        if [ ! -f "$SITE_PACKAGES/${mod}.py" ]; then
+            ln -sf "$BIN_DIR/${mod}.py" "$SITE_PACKAGES/${mod}.py"
+        fi
+    done
 }
 
 install_config() {

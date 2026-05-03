@@ -33,6 +33,7 @@ from flask import Flask, jsonify, request
 from waitress import create_server
 
 import door_control
+from version import VERSION
 
 log = logging.getLogger(__name__)
 app = Flask(__name__)
@@ -90,6 +91,11 @@ def _reject_bad_door(name):
     if len(name) > _DOOR_NAME_MAX or name not in _known_doors:
         return jsonify({"error": "unknown door"}), 404
     return None
+
+
+@app.route("/version", methods=["GET"])
+def get_version():
+    return jsonify({"version": VERSION})
 
 
 @app.route("/doors", methods=["GET"])
@@ -206,7 +212,7 @@ def main():
     signal.signal(signal.SIGINT, _shutdown_handler)
     signal.signal(signal.SIGTERM, _shutdown_handler)
 
-    log.info("chickenctl starting on %s:%d", host, port)
+    log.info("chickenctl %s starting on %s:%d", VERSION, host, port)
 
     ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_ctx.load_cert_chain(cert, key)

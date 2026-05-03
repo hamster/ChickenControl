@@ -28,6 +28,7 @@ import threading
 from datetime import datetime, timedelta
 
 import door_control
+from version import VERSION
 
 log = logging.getLogger(__name__)
 
@@ -327,7 +328,7 @@ def main():
     signal.signal(signal.SIGINT, _shutdown_handler)
     signal.signal(signal.SIGTERM, _shutdown_handler)
 
-    log.info("chickengate starting with doors: %s", ", ".join(_doors))
+    log.info("chickengate %s starting with doors: %s", VERSION, ", ".join(_doors))
 
     # Start solar scheduler if location is configured
     if cfg.has_section("location"):
