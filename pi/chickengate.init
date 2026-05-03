@@ -1,35 +1,31 @@
 #!/bin/sh
 ### BEGIN INIT INFO
-# Provides:          chickenctl
-# Required-Start:    $remote_fs $syslog $network chickengate
-# Required-Stop:     $remote_fs $syslog $network chickengate
+# Provides:          chickengate
+# Required-Start:    $local_fs $syslog
+# Required-Stop:     $local_fs $syslog
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Short-Description: Chicken door HTTPS proxy (Home Assistant interface)
-# Description:       Forwards authenticated HTTPS requests from Home Assistant
-#                    to the chickengate hardware daemon via Unix socket.
+# Short-Description: Chicken door hardware daemon (GPIO + scheduler)
+# Description:       Manages GPIO relay control and solar scheduling for
+#                    chicken coop doors.  Accepts commands from chickenctl
+#                    via Unix socket.
 ### END INIT INFO
 
 PATH=/sbin:/usr/sbin:/bin:/usr/bin
-DESC="Chicken door HTTPS proxy"
-NAME=chickenctl
-DAEMON=/usr/local/bin/chickenctl
-DAEMON_USER=chickennet
+DESC="Chicken door hardware daemon"
+NAME=chickengate
+DAEMON=/usr/local/bin/chickengate
+DAEMON_USER=chickenhw
 PIDFILE=/var/run/$NAME.pid
 LOGFILE=/var/log/$NAME.log
 SCRIPTNAME=/etc/init.d/$NAME
 
-# Source optional defaults (e.g. override DAEMON_ARGS here)
 [ -r /etc/default/$NAME ] && . /etc/default/$NAME
 
-# LSB functions
 . /lib/init/vars.sh
 . /lib/lsb/init-functions
 
 do_start() {
-    # Return:
-    #   0  — started or already running
-    #   1  — could not be started
     start-stop-daemon --start --quiet \
         --pidfile "$PIDFILE" --make-pidfile \
         --background --no-close \
@@ -46,10 +42,6 @@ do_start() {
 }
 
 do_stop() {
-    # Return:
-    #   0  — stopped
-    #   1  — was not running
-    #   2  — could not be stopped
     start-stop-daemon --stop --quiet \
         --retry=TERM/30/KILL/5 \
         --pidfile "$PIDFILE" \

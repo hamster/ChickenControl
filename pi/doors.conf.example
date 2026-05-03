@@ -1,17 +1,18 @@
 # /etc/chickendoor/doors.conf
 #
-# Configuration for chickenctl daemon and chickendoor CLI.
-# Install to /etc/chickendoor/doors.conf (chmod 640, chown root:root).
+# Configuration for chickengate (hardware daemon) and chickenctl (HTTPS proxy).
+# Install to /etc/chickendoor/doors.conf (chmod 640, chown root:chicken-ipc).
 #
-# [server] is reserved for daemon settings.
-# Every other section defines one door.  The section name is the door's
-# identifier used in CLI commands and HTTP API paths.
+# Sections:
+#   [server]   — HTTPS proxy settings (token, TLS)
+#   [location] — latitude/longitude for solar scheduling (optional)
+#   [<name>]   — one section per door (e.g. [coop], [run])
 
 # ---------------------------------------------------------------------------
 [server]
 # ---------------------------------------------------------------------------
 
-# Address and port for the HTTPS API.
+# Address and port for the HTTPS API served by chickenctl.
 # Bind to a specific interface IP to restrict access further.
 host  = 0.0.0.0
 port  = 8443
@@ -24,7 +25,6 @@ port  = 8443
 #     -out    /etc/chickendoor/server.crt \
 #     -days 3650 -subj "/CN=chickencoop.local"
 #
-# Copy server.crt to the Home Assistant host so the integration can verify it.
 cert  = /etc/chickendoor/server.crt
 key   = /etc/chickendoor/server.key
 
@@ -36,13 +36,28 @@ key   = /etc/chickendoor/server.key
 token = REPLACE_WITH_GENERATED_TOKEN
 
 # ---------------------------------------------------------------------------
+[location]
+# ---------------------------------------------------------------------------
+# Optional.  When present, chickengate calculates daily sunrise/sunset times
+# and automatically opens/closes doors according to the schedule defined in
+# each door section.  Remove or comment out this entire section to disable
+# the solar scheduler (you will need to use cron + chickendoor instead).
+
+# Decimal degrees.  West longitudes are negative.
+latitude  = 41.256
+longitude = -95.995
+
+# IANA timezone name.  Must match the Pi's local time zone.
+# Run "timedatectl" on the Pi to find the correct value.
+timezone  = America/Chicago
+
+# ---------------------------------------------------------------------------
 [coop]
 # ---------------------------------------------------------------------------
 # Chicken coop entry door.
 #
 # relay_a / relay_b are BCM GPIO pin numbers (the number after "GPIO" in the
-# Pi pinout, e.g. pinout.xyz).  Run "gpio readall" on the Pi to map wiringPi
-# numbers to BCM numbers if needed.
+# Pi pinout, e.g. pinout.xyz).
 #
 # OPEN  command: relay_a HIGH + relay_b LOW  for open_ms milliseconds
 # CLOSE command: relay_a LOW  + relay_b HIGH for close_ms milliseconds
@@ -54,12 +69,25 @@ relay_b  = 6        # BCM 6  (wiringPi 22, physical pin 31)
 open_ms  = 30000    # milliseconds to hold relay for a full open travel
 close_ms = 30000    # milliseconds to hold relay for a full close travel
 
+# Solar schedule (requires [location] section above).
+# Format: sunrise|sunset followed by an optional +/- minute offset.
+# Examples:  sunrise+30  (30 min after sunrise)
+#            sunset-60   (60 min before sunset)
+#            sunrise     (exactly at sunrise)
+# Remove or comment out to leave this door unscheduled.
+open_at  = sunrise+30
+close_at = sunset-60
+
 # ---------------------------------------------------------------------------
 [run]
 # ---------------------------------------------------------------------------
-# Outdoor run gate (currently disabled in crontab).
+# Outdoor run gate.
 
 relay_a  = 26       # BCM 26 (wiringPi 25, physical pin 37)
 relay_b  = 4        # BCM 4  (wiringPi 7,  physical pin 7)
 open_ms  = 30000
 close_ms = 35000
+
+# Uncomment to schedule this door as well:
+# open_at  = sunrise+30
+# close_at = sunset-60

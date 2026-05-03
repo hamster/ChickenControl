@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
 """
-chickenctl — HTTPS daemon for manual door control via Home Assistant.
+chickenctl — HTTPS proxy daemon for Home Assistant integration.
 
-Exposes a small REST API protected by a Bearer token.  All door operations
-run in background threads so the HTTP response returns immediately (202).
-The cron CLI (chickendoor) and this daemon share the same lockfiles, so
-concurrent operations on the same door are serialized automatically.
+Runs as user 'chickennet' (chicken-ipc group, no GPIO access).
+Receives authenticated HTTPS requests and forwards them to the chickengate
+hardware daemon via Unix socket at /run/chickengate.sock.
+
+The REST API is unchanged — the Home Assistant integration requires no
+modifications.
 
 Endpoints:
-    POST /door/<name>/open      → 202 Accepted  |  409 Busy  |  404
-    POST /door/<name>/close     → 202 Accepted  |  409 Busy  |  404
-    GET  /door/<name>/status    → 200 {"state": "open"|"closed"|"moving"|"unknown"}
+    GET  /doors                → 200 {"doors": [...]}
+    POST /door/<name>/open     → 202 | 409 Busy | 404 | 503
+    POST /door/<name>/close    → 202 | 409 Busy | 404 | 503
+    GET  /door/<name>/status   → 200 {"state": "..."} | 404 | 503
 
 All endpoints require:
     Authorization: Bearer <token>
 """
 
 import argparse
+import hmac
+import json
 import logging
 import os
 import signal
 import socket
 import ssl
 import sys
-import threading
 
 from flask import Flask, jsonify, request
 from waitress import create_server
@@ -32,13 +36,37 @@ import door_control
 
 log = logging.getLogger(__name__)
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 1024  # POST bodies are empty; reject anything large
 
-# Populated at startup
-_doors = {}
+SOCKET_PATH = "/run/chickengate.sock"
+_DOOR_NAME_MAX = 64   # rejects absurdly long names before touching the socket
+
 _token = ""
-_door_stop_events: dict[str, threading.Event] = {}
-_door_direction: dict[str, str] = {}   # door_name → "open"/"close" while moving
-_door_threads: dict[str, threading.Thread] = {}
+_known_doors: set[str] = set()  # populated at startup from chickengate
+
+
+# ---------------------------------------------------------------------------
+# Gate communication
+# ---------------------------------------------------------------------------
+
+def _gate_request(req_dict):
+    """Send one JSON request to chickengate and return the parsed response."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(10.0)
+        sock.connect(SOCKET_PATH)
+        sock.sendall(json.dumps(req_dict).encode() + b"\n")
+        with sock.makefile("r") as f:
+            resp = json.loads(f.readline(4096))
+        return resp
+    except (OSError, json.JSONDecodeError) as e:
+        log.error("chickengate socket error: %s", e)
+        return {"error": "hardware daemon unavailable"}
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +76,7 @@ _door_threads: dict[str, threading.Thread] = {}
 @app.before_request
 def _check_token():
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != _token:
+    if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:], _token):
         return jsonify({"error": "unauthorized"}), 401
 
 
@@ -56,66 +84,54 @@ def _check_token():
 # Routes
 # ---------------------------------------------------------------------------
 
+def _reject_bad_door(name):
+    """Return a 404 response if name fails local validation, else None.
+    Prevents socket round-trips for obviously invalid door names."""
+    if len(name) > _DOOR_NAME_MAX or name not in _known_doors:
+        return jsonify({"error": "unknown door"}), 404
+    return None
+
+
 @app.route("/doors", methods=["GET"])
 def list_doors():
-    return jsonify({"doors": list(_doors.keys())})
+    resp = _gate_request({"cmd": "doors"})
+    if "error" in resp:
+        return jsonify(resp), 503
+    return jsonify(resp)
 
 
 @app.route("/door/<name>/status", methods=["GET"])
 def door_status(name):
-    if name not in _doors:
-        return jsonify({"error": "unknown door"}), 404
-    state = door_control.get_status(name)
-    if state == "moving":
-        direction = _door_direction.get(name, "open")
-        state = "opening" if direction == "open" else "closing"
-    return jsonify({"state": state})
+    err = _reject_bad_door(name)
+    if err:
+        return err
+    resp = _gate_request({"cmd": "status", "door": name})
+    if "error" in resp:
+        return jsonify(resp), 503
+    return jsonify(resp)
 
 
 @app.route("/door/<name>/open", methods=["POST"])
 def door_open(name):
-    return _command(name, "open")
+    return _proxy_command(name, "open")
 
 
 @app.route("/door/<name>/close", methods=["POST"])
 def door_close(name):
-    return _command(name, "close")
+    return _proxy_command(name, "close")
 
 
-def _command(name, command):
-    if name not in _doors:
-        return jsonify({"error": "unknown door"}), 404
-    if door_control.is_moving(name):
-        current_dir = _door_direction.get(name)
-        if command == "open" and current_dir == "close":
-            log.info("Overriding close with open for '%s'", name)
-            _door_stop_events[name].set()
-            t = _door_threads.get(name)
-            if t and t.is_alive():
-                t.join(timeout=2.0)
-            _door_stop_events[name].clear()
-        else:
-            return jsonify({"error": "door is moving", "state": "moving"}), 409
-    door = _doors[name]
-    _door_direction[name] = command
-    t = threading.Thread(
-        target=_run_operate, args=(door, command), daemon=True, name=f"{name}-{command}"
-    )
-    _door_threads[name] = t
-    t.start()
-    return jsonify({"state": "moving"}), 202
-
-
-def _run_operate(door, command):
-    try:
-        door_control.operate(door, command, stop_event=_door_stop_events.get(door.name))
-    except RuntimeError as e:
-        log.warning("operate failed for %s: %s", door.name, e)
-    except Exception:
-        log.exception("unexpected error operating %s", door.name)
-    finally:
-        if _door_direction.get(door.name) == command:
-            _door_direction.pop(door.name, None)
+def _proxy_command(name, cmd):
+    err = _reject_bad_door(name)
+    if err:
+        return err
+    resp = _gate_request({"cmd": cmd, "door": name})
+    code = resp.pop("code", None)
+    if code == 409 or "moving" in resp.get("error", ""):
+        return jsonify(resp), 409
+    if "error" in resp:
+        return jsonify(resp), 503
+    return jsonify(resp), 202
 
 
 # ---------------------------------------------------------------------------
@@ -124,17 +140,13 @@ def _run_operate(door, command):
 
 def _shutdown_handler(signum, frame):
     log.info("Signal %d received — shutting down", signum)
-    for event in _door_stop_events.values():
-        event.set()
-    door_control.deenergize_all(_doors)
-    door_control.cleanup_gpio()
     sys.exit(0)
 
 
 def main():
-    global _doors, _token
+    global _token, _known_doors
 
-    parser = argparse.ArgumentParser(description="Chicken door HTTPS control daemon")
+    parser = argparse.ArgumentParser(description="Chicken door HTTPS proxy daemon")
     parser.add_argument(
         "-c", "--config",
         default=door_control.DEFAULT_CONFIG,
@@ -149,8 +161,7 @@ def main():
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    # Clients that are Ctrl-C'd mid-handshake cause a harmless SSLEOFError in
-    # waitress's accept() path.  Filter it out to keep the logs clean.
+    # Clients that are Ctrl-C'd mid-handshake cause a harmless SSLEOFError.
     class _SuppressSSLEOF(logging.Filter):
         def filter(self, record):
             return not (
@@ -161,10 +172,12 @@ def main():
     logging.getLogger("waitress").addFilter(_SuppressSSLEOF())
 
     try:
-        cfg, _doors = door_control.load_config(args.config)
-    except FileNotFoundError as e:
+        cfg, doors = door_control.load_config(args.config)
+    except (FileNotFoundError, ValueError) as e:
         log.error("%s", e)
         sys.exit(1)
+
+    _known_doors = set(doors)
 
     if not cfg.has_section("server"):
         log.error("doors.conf is missing [server] section")
@@ -175,23 +188,25 @@ def main():
     cert = cfg.get("server", "cert")
     key = cfg.get("server", "key")
     _token = cfg.get("server", "token")
+    threads = cfg.getint("server", "threads", fallback=8)
+
+    if not _token or _token == "REPLACE_WITH_GENERATED_TOKEN":
+        log.error(
+            "No API token set in doors.conf.  Generate one with:\n"
+            "  python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"\n"
+            "then set: token = <generated value>  in the [server] section."
+        )
+        sys.exit(1)
 
     for path, label in ((cert, "cert"), (key, "key")):
         if not os.path.exists(path):
             log.error("TLS %s not found: %s", label, path)
             sys.exit(1)
 
-    for name in _doors:
-        _door_stop_events[name] = threading.Event()
-
-    door_control.clean_stale_locks(_doors)
-    door_control.setup_gpio(_doors)
-
     signal.signal(signal.SIGINT, _shutdown_handler)
     signal.signal(signal.SIGTERM, _shutdown_handler)
 
-    log.info("chickenctl starting on %s:%d with doors: %s",
-             host, port, ", ".join(_doors))
+    log.info("chickenctl starting on %s:%d", host, port)
 
     ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_ctx.load_cert_chain(cert, key)
@@ -200,7 +215,7 @@ def main():
     sock.bind((host, port))
     ssl_sock = ssl_ctx.wrap_socket(sock, server_side=True)
 
-    server = create_server(app, sockets=[ssl_sock])
+    server = create_server(app, sockets=[ssl_sock], threads=threads)
     server.run()
 
 

@@ -1,6 +1,7 @@
 [Unit]
-Description=Chicken door HTTPS control daemon
-After=network.target
+Description=Chicken door HTTPS proxy (Home Assistant interface)
+After=network.target chickengate.service
+Requires=chickengate.service
 
 [Service]
 Type=simple
@@ -10,17 +11,16 @@ RestartSec=5s
 WorkingDirectory=/tmp
 PrivateTmp=true
 
-# Log to the journal; view with: journalctl -u chickenctl -f
 StandardOutput=journal
 StandardError=journal
 
-# Run as root for GPIO access.
-# Alternative: create a 'chickendoor' user, add to the 'gpio' group,
-# and set User=chickendoor here.
-User=root
+# Runs as chickennet — network access only, no GPIO
+User=chickennet
 
-# Protect the filesystem from writes outside expected paths
-ReadWritePaths=/run /var/lib/chickendoor
+# Needs to read TLS cert/key and config; no write access needed
+ReadOnlyPaths=/etc/chickendoor
+# Needs to connect to the chickengate socket in /run
+ReadWritePaths=/run
 ProtectSystem=strict
 ProtectHome=true
 

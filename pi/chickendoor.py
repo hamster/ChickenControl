@@ -2,74 +2,47 @@
 """
 chickendoor — CLI tool for operating chicken coop doors.
 
-Called directly by cron (via sunwait) for scheduled open/close events.
+Connects to the chickengate hardware daemon via Unix socket.
+Requires membership in the chicken-ipc group (or root).
 
 Usage:
     chickendoor open  <door>
     chickendoor close <door>
 
 Examples:
-    chickendoor open  coop
-    chickendoor close coop
-    chickendoor open  run
+    sudo chickendoor open  coop
+    sudo chickendoor close coop
+    sudo chickendoor open  run
 """
 
 import argparse
 import json
 import logging
-import ssl
+import socket
 import sys
 import time
-import urllib.error
-import urllib.request
 
-import door_control
+SOCKET_PATH = "/run/chickengate.sock"
+
+log = logging.getLogger(__name__)
 
 
-def _try_daemon(cfg, command, door_name):
-    """POST command to chickenctl daemon and block until done. Returns True on success,
-    False if the daemon isn't reachable (caller should fall back to direct GPIO)."""
-    if not cfg.has_section("server"):
-        return False
-
-    host = cfg.get("server", "host", fallback="127.0.0.1")
-    if host == "0.0.0.0":
-        host = "127.0.0.1"
-    port = cfg.getint("server", "port", fallback=8443)
-    token = cfg.get("server", "token")
-    base = f"https://{host}:{port}"
-
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    headers = {"Authorization": f"Bearer {token}"}
-
-    req = urllib.request.Request(
-        f"{base}/door/{door_name}/{command}", method="POST",
-        headers=headers, data=b"",
-    )
+def _gate_request(req_dict, timeout=5.0):
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
-            if resp.status == 409:
-                raise RuntimeError(f"door '{door_name}' is already moving")
-    except urllib.error.URLError:
-        return False  # daemon not running — fall back to GPIO
-
-    # Block until the daemon reports the door is no longer moving
-    status_req = urllib.request.Request(
-        f"{base}/door/{door_name}/status", headers=headers,
-    )
-    try:
-        while True:
-            with urllib.request.urlopen(status_req, context=ctx, timeout=5) as resp:
-                state = json.loads(resp.read()).get("state")
-            if state not in ("moving", "opening", "closing"):
-                break
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        print(f"\n{door_name}: interrupted — door may still be moving", file=sys.stderr)
-
-    return True
+        sock.settimeout(timeout)
+        sock.connect(SOCKET_PATH)
+        sock.sendall(json.dumps(req_dict).encode() + b"\n")
+        with sock.makefile("r") as f:
+            line = f.readline()
+        if not line:
+            raise OSError("chickengate closed connection without responding")
+        return json.loads(line)
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
 
 
 def main():
@@ -80,12 +53,6 @@ def main():
     )
     parser.add_argument("command", choices=["open", "close"])
     parser.add_argument("door", help="Door name (must match a section in doors.conf)")
-    parser.add_argument(
-        "-c", "--config",
-        default=door_control.DEFAULT_CONFIG,
-        metavar="FILE",
-        help="Path to doors.conf (default: %(default)s)",
-    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -95,37 +62,32 @@ def main():
     )
 
     try:
-        cfg, doors = door_control.load_config(args.config)
-    except FileNotFoundError as e:
-        print(f"error: {e}", file=sys.stderr)
+        resp = _gate_request({"cmd": args.command, "door": args.door})
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"error: cannot communicate with chickengate: {e}", file=sys.stderr)
+        print("  Is chickengate running?  sudo systemctl status chickengate", file=sys.stderr)
         sys.exit(1)
 
-    if args.door not in doors:
-        known = ", ".join(sorted(doors))
-        print(f"error: unknown door '{args.door}' (known: {known})", file=sys.stderr)
-        sys.exit(1)
+    if "error" in resp:
+        print(f"error: {resp['error']}", file=sys.stderr)
+        sys.exit(1 if resp.get("code", 0) != 409 else 2)
 
-    door = doors[args.door]
-
+    # Poll until the door stops moving
     try:
-        if _try_daemon(cfg, args.command, args.door):
-            print(f"{args.door}: {args.command} complete")
-            return
-    except RuntimeError as e:
-        print(f"error: {e}", file=sys.stderr)
+        while True:
+            resp = _gate_request({"cmd": "status", "door": args.door})
+            state = resp.get("state", "unknown")
+            if state not in ("moving", "opening", "closing"):
+                break
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print(f"\n{args.door}: interrupted — door may still be moving", file=sys.stderr)
+        sys.exit(0)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"error: lost contact with chickengate while waiting: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Daemon not running — drive GPIO directly
-    door_control.setup_gpio(doors)
-    try:
-        door_control.operate(door, args.command)
-    except RuntimeError as e:
-        print(f"error: {e}", file=sys.stderr)
-        door_control.cleanup_gpio()
-        sys.exit(1)
-
-    door_control.cleanup_gpio()
-    print(f"{args.door}: {args.command} complete")
+    print(f"{args.door}: {state}")
 
 
 if __name__ == "__main__":

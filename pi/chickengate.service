@@ -1,0 +1,26 @@
+[Unit]
+Description=Chicken door hardware daemon (GPIO + solar scheduler)
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/chickengate
+Restart=on-failure
+RestartSec=5s
+WorkingDirectory=/tmp
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+
+# Runs as chickenhw (gpio group) — never as root
+User=chickenhw
+
+# Allow writes to runtime socket dir and state dir only
+ReadWritePaths=/run /var/lib/chickendoor
+ReadOnlyPaths=/etc/chickendoor
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -6,7 +6,7 @@
 
 Automated chicken coop door and gate control running on a Raspberry Pi, with a [Home Assistant][ha] integration for manual overrides and status monitoring.
 
-The Pi operates independently — doors open and close on a solar schedule via [sunwait][sunwait] even when the network is down. Home Assistant adds manual open/close buttons and a live door status sensor when the Pi is reachable on the LAN.
+The Pi operates independently — doors open and close on a built-in solar schedule calculated from your latitude and longitude, even when the network is down. Home Assistant adds manual open/close buttons and a live door status sensor when the Pi is reachable on the LAN.
 
 ---
 
@@ -21,8 +21,7 @@ The Pi operates independently — doors open and close on a solar schedule via [
 ### Software — Raspberry Pi
 
 - Raspberry Pi OS (Bullseye or newer)
-- Python 3.9+, `flask`, `waitress`, `RPi.GPIO` (or `rpi-lgpio` on Pi 5)
-- [sunwait][sunwait] compiled and installed to `/usr/local/bin/sunwait`
+- Python 3.9+, `flask`, `waitress`, `astral`, `RPi.GPIO` (or `rpi-lgpio` on Pi 5)
 
 ### Software — Home Assistant
 
@@ -48,12 +47,13 @@ sudo sh pi/install.sh
 
 The installer will:
 
-- Install Python dependencies (`flask`, `waitress`, `RPi.GPIO` / `rpi-lgpio`)
+- Install Python dependencies (`flask`, `waitress`, `astral`, `RPi.GPIO` / `rpi-lgpio`)
+- Create the `chickenhw` and `chickennet` system users and `chicken-ipc` group
 - Create `/etc/chickendoor/` and `/var/lib/chickendoor/`
-- Install `chickendoor` and `chickenctl` to `/usr/local/bin/`
+- Install all binaries to `/usr/local/bin/`
 - Copy `doors.conf.example` to `/etc/chickendoor/doors.conf`
 - Generate a self-signed TLS certificate in `/etc/chickendoor/`
-- Enable and register the `chickenctl` startup service (systemd preferred, SysV init fallback)
+- Install and enable both startup services (systemd preferred, SysV init fallback)
 
 ### 3. Configure doors
 
@@ -63,69 +63,68 @@ Edit `/etc/chickendoor/doors.conf`:
 sudo nano /etc/chickendoor/doors.conf
 ```
 
-At minimum, set the correct **BCM pin numbers** for your relay wiring and generate a **unique API token**:
+At minimum, set the correct **BCM pin numbers** for your relay wiring, your **location** for solar scheduling, and generate a **unique API token**:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
+A minimal working config looks like this:
+
+```ini
+[server]
+host  = 0.0.0.0
+port  = 8443
+cert  = /etc/chickendoor/server.crt
+key   = /etc/chickendoor/server.key
+token = REPLACE_WITH_GENERATED_TOKEN
+
+[location]
+latitude  = 41.256
+longitude = -95.995
+timezone  = America/Chicago
+
+[coop]
+relay_a  = 22
+relay_b  = 6
+open_ms  = 30000
+close_ms = 30000
+open_at  = sunrise+30
+close_at = sunset-60
+```
+
+`open_at` and `close_at` accept `sunrise` or `sunset` with an optional `+N` or `-N` minute offset.
+Remove or comment them out to leave a door unscheduled.
+
+> **Note:** The daemon will refuse to start if `token` is still set to `REPLACE_WITH_GENERATED_TOKEN`
+> or is empty.  You must set a real generated token before the services will run.
+
 See [`pi/doors.conf.example`](pi/doors.conf.example) for a fully annotated template.
 
-### 4. Start the daemon
+### 4. Start the daemons
 
 ```bash
 # systemd
-sudo systemctl start chickenctl
-sudo journalctl -u chickenctl -f
+sudo systemctl start chickengate chickenctl
+sudo journalctl -u chickengate -f
+sudo journalctl -u chickenctl  -f
 
 # SysV init
-sudo service chickenctl start
-sudo tail -f /var/log/chickenctl.log
+sudo service chickengate start
+sudo service chickenctl  start
+sudo tail -f /var/log/chickengate.log /var/log/chickenctl.log
 ```
 
-### 5. Set up the crontab
+`chickengate` must be running before `chickenctl` — the systemd unit enforces this automatically.
 
-Create `/etc/cron.d/chickendoor` with entries like the following, substituting your latitude and longitude:
-
-```
-# /etc/cron.d/chickendoor
-
-# Close coop door 60 minutes before sunset
-0 16 * * * root /usr/local/bin/sunwait wait set offset -60 41.256N 95.995W; /usr/local/bin/chickendoor close coop
-
-# Open coop door at sunrise
-0 4 * * * root /usr/local/bin/sunwait wait rise 41.256N 95.995W; /usr/local/bin/chickendoor open coop
-```
-
-#### How sunwait works
-
-[sunwait][sunwait] is a small utility that calculates sunrise/sunset for a given latitude and longitude and **blocks** until that moment arrives. The cron entry fires at a fixed time that is always safely before the earliest possible solar event at your latitude (4 AM for sunrise, 4 PM for sunset). `sunwait` then holds until the exact event, and `chickendoor` runs the moment it exits.
-
-The `offset` flag shifts the trigger relative to the event — `offset -60` on the sunset entry closes the door 60 minutes *before* sunset rather than at sunset itself. Positive offsets delay past the event.
-
-```
-cron fires at 4:00 AM
-  └─ sunwait wait rise 41.256N 95.995W
-       └─ (blocks until sunrise, e.g. 6:47 AM)
-            └─ chickendoor open coop
-```
-
-Build and install sunwait from [its GitHub page][sunwait]:
+### 5. Test from the command line
 
 ```bash
-git clone https://github.com/risacher/sunwait.git
-cd sunwait && make
-sudo cp sunwait /usr/local/bin/
-```
-
-### 6. Test from the command line
-
-```bash
-# Manual open/close
-sudo chickendoor open coop
+# Manual open/close (connects to chickengate socket directly)
+sudo chickendoor open  coop
 sudo chickendoor close coop
 
-# Check daemon status
+# Check daemon status via the HTTPS API
 TOKEN=$(sudo grep '^token' /etc/chickendoor/doors.conf | cut -d= -f2 | tr -d ' ')
 curl -k -H "Authorization: Bearer $TOKEN" https://localhost:8443/door/coop/status
 ```
@@ -222,30 +221,56 @@ When the Pi is unreachable all entities show as **unavailable**.
 
 ## How It Works
 
-### Scheduled operation (Pi-only, no network required)
+### Service architecture
+
+ChickenControl splits work across two processes to limit the blast radius if the network-facing side is ever compromised:
 
 ```
-cron fires at 4:00 AM
-  └─ sunwait wait rise 41.256N 95.995W   ← blocks until sunrise
-       └─ chickendoor open coop
+Home Assistant
+    │  HTTPS :8443
+    ▼
+chickenctl  (user: chickennet — no GPIO access)
+    │  Unix socket  /run/chickengate.sock
+    ▼
+chickengate (user: chickenhw  — gpio group only)
+    │  /dev/gpiomem
+    ▼
+relay hat → linear actuators
 ```
 
-See the [crontab setup section](#5-set-up-the-crontab) for full details and build instructions for sunwait. No network or Home Assistant involvement required.
+`chickengate` owns all hardware access and the solar scheduler. It never touches the network. `chickenctl` owns TLS termination and Bearer token authentication. It never touches GPIO. Even if an attacker fully compromises `chickenctl`, the worst they can do is send `open` or `close` for a door that is already configured — they cannot access arbitrary GPIO pins or escalate further.
+
+### Solar scheduler
+
+At startup, `chickengate` reads your latitude, longitude, and timezone from `doors.conf` and uses the [astral][astral] library to compute today's sunrise and sunset times. It then sleeps until each scheduled event and fires the appropriate door command. Times are recalculated at midnight each day. No cron jobs or external utilities are required.
+
+```
+chickengate starts
+  └─ compute today's solar events (astral, pure Python, no network)
+       └─ sleep until sunrise + 30 min
+            └─ open coop
+       └─ sleep until sunset − 60 min
+            └─ close coop
+  └─ midnight: recalculate for tomorrow
+```
+
+If the `[location]` section is absent from `doors.conf`, the scheduler is disabled and doors must be controlled manually via Home Assistant or `chickendoor`.
 
 ### Manual override (via Home Assistant)
 
 ```
 HA cover open/close/stop
   └─ POST /door/coop/open   (HTTPS + Bearer token)
-       └─ chickenctl daemon
-            └─ background thread: sets GPIO, holds relay for travel duration, clears GPIO
+       └─ chickenctl validates token, forwards to socket
+            └─ chickengate: background thread sets GPIO,
+               holds relay for travel duration, clears GPIO
 ```
 
-The daemon returns `202 Accepted` immediately. The coordinator polls `GET /door/coop/status` every 5 seconds. While moving, the status is `opening` or `closing` (direction is tracked). When the operation completes, the status changes to `open` or `closed`.
+`chickenctl` returns `202 Accepted` immediately. The HA coordinator polls `GET /door/coop/status` every 5 seconds. While moving, the status is `opening` or `closing`. When the operation completes, it changes to `open` or `closed`.
 
 ### Interrupting a close
 
-If an open command is received while the door is closing, the daemon:
+If an open command is received while the door is closing, `chickengate`:
 
 1. Signals the close thread to stop
 2. Waits for the relay to de-energise
@@ -260,7 +285,7 @@ When switching direction, the code always de-energises the active relay before e
 
 ### Concurrency
 
-Both `chickendoor` (cron) and `chickenctl` (daemon) use the same per-door lockfile at `/run/chickendoor-{name}.lock`. If cron fires while a manual command is in progress, `chickendoor` routes through the daemon, which applies the same override rules.
+All door operations hold a per-door lockfile at `/run/chickendoor-{name}.lock`. The solar scheduler and manual commands go through the same command path inside `chickengate`, so they are serialised automatically and the same override rules apply.
 
 ---
 
@@ -316,4 +341,4 @@ GPL 3.0 — see [LICENSE](LICENSE).
 [config-flow-start]: https://my.home-assistant.io/redirect/config_flow_start/?domain=chickencontrol
 [releases]: https://github.com/hamster/ChickenControl/releases
 [relay-hat]: https://www.keyestudio.com/products/keyestudio-rpi-4channel-relay-5v-shield-for-raspberry-pi-ce-certification
-[sunwait]: https://github.com/risacher/sunwait
+[astral]: https://pypi.org/project/astral/

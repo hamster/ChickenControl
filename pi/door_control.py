@@ -1,17 +1,23 @@
 """
-Shared GPIO and lockfile logic for chickendoor CLI and chickenctl daemon.
+Shared GPIO and lockfile logic for chickengate daemon.
 
-Both tools call operate() to drive a door.  A per-door lockfile in /run/
-serializes concurrent callers (cron vs manual) and doubles as the "moving"
-state signal for the status endpoint.
+operate() drives a door relay for the configured travel duration.
+A per-door lockfile in /run/ serializes concurrent callers and doubles
+as the "moving" state signal for the status endpoint.
 """
 
 import configparser
 import logging
 import os
+import re
 import signal
 import threading
 import time
+
+# Only lowercase letters, digits, underscores, and hyphens are safe in door
+# names, because names are embedded in file paths (/run/chickendoor-<name>.lock
+# and /var/lib/chickendoor/<name>.state).
+_VALID_DOOR_NAME = re.compile(r'^[a-z0-9_-]+$')
 
 try:
     import RPi.GPIO as GPIO
@@ -32,44 +38,82 @@ _STATE_AFTER = {"open": "open", "close": "closed"}
 
 
 class DoorConfig:
-    __slots__ = ("name", "relay_a", "relay_b", "open_ms", "close_ms")
+    __slots__ = ("name", "relay_a", "relay_b", "open_ms", "close_ms", "open_at", "close_at")
 
-    def __init__(self, name, relay_a, relay_b, open_ms, close_ms):
+    def __init__(self, name, relay_a, relay_b, open_ms, close_ms, open_at=None, close_at=None):
         self.name = name
         self.relay_a = relay_a
         self.relay_b = relay_b
         self.open_ms = open_ms
         self.close_ms = close_ms
+        self.open_at = open_at    # (event, offset_minutes) or None
+        self.close_at = close_at  # (event, offset_minutes) or None
+
+
+def _parse_schedule(value):
+    """Parse 'sunrise+30', 'sunset-60', 'sunrise', etc.
+    Returns (event_name, offset_minutes) or None on empty/invalid input."""
+    if not value:
+        return None
+    v = value.strip().lower()
+    for event in ("sunrise", "sunset"):
+        if v.startswith(event):
+            rest = v[len(event):]
+            try:
+                offset = int(rest) if rest else 0
+            except ValueError:
+                log.warning("Invalid schedule offset %r — ignoring", value)
+                return None
+            return event, offset
+    log.warning("Unrecognised schedule value %r — ignoring", value)
+    return None
 
 
 def load_config(path=DEFAULT_CONFIG):
-    """Return (RawConfigParser, {name: DoorConfig}).  Raises on missing file."""
+    """Return (RawConfigParser, {name: DoorConfig}).  Raises on missing or invalid file."""
     cfg = configparser.ConfigParser(inline_comment_prefixes=('#',))
     if not cfg.read(path):
         raise FileNotFoundError(f"Config not found: {path}")
     doors = {}
     for section in cfg.sections():
-        if section == "server":
+        if section in ("server", "location"):
             continue
-        doors[section] = DoorConfig(
-            name=section,
-            relay_a=cfg.getint(section, "relay_a"),
-            relay_b=cfg.getint(section, "relay_b"),
-            open_ms=cfg.getint(section, "open_ms"),
-            close_ms=cfg.getint(section, "close_ms"),
-        )
+        if not _VALID_DOOR_NAME.match(section):
+            raise ValueError(
+                f"Door name [{section}] contains invalid characters. "
+                "Use only lowercase letters, digits, underscores, and hyphens."
+            )
+        try:
+            doors[section] = DoorConfig(
+                name=section,
+                relay_a=cfg.getint(section, "relay_a"),
+                relay_b=cfg.getint(section, "relay_b"),
+                open_ms=cfg.getint(section, "open_ms"),
+                close_ms=cfg.getint(section, "close_ms"),
+                open_at=_parse_schedule(cfg.get(section, "open_at", fallback="")),
+                close_at=_parse_schedule(cfg.get(section, "close_at", fallback="")),
+            )
+        except (configparser.NoOptionError, ValueError) as e:
+            raise ValueError(f"Bad config in [{section}]: {e}") from e
     return cfg, doors
 
 
 def setup_gpio(doors):
-    """Set BCM mode and configure all door pins as OUTPUT LOW."""
+    """Set BCM mode and configure all door pins as OUTPUT LOW.
+    Raises RuntimeError if any pin is invalid or already claimed."""
     if not _HAS_GPIO:
         return
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
     for door in doors.values():
-        GPIO.setup(door.relay_a, GPIO.OUT, initial=GPIO.LOW)
-        GPIO.setup(door.relay_b, GPIO.OUT, initial=GPIO.LOW)
+        try:
+            GPIO.setup(door.relay_a, GPIO.OUT, initial=GPIO.LOW)
+            GPIO.setup(door.relay_b, GPIO.OUT, initial=GPIO.LOW)
+        except (RuntimeError, ValueError) as e:
+            raise RuntimeError(
+                f"GPIO setup failed for door '{door.name}' "
+                f"(relay_a={door.relay_a}, relay_b={door.relay_b}): {e}"
+            ) from e
 
 
 def deenergize_all(doors):
@@ -117,7 +161,6 @@ def is_moving(name):
         os.kill(pid, 0)  # raises OSError if PID is gone
         return True
     except (ValueError, OSError):
-        # Stale lockfile — clean it up
         try:
             os.unlink(lp)
         except OSError:
@@ -139,7 +182,7 @@ def get_status(name):
 def clean_stale_locks(doors):
     """Called at daemon startup to remove locks left by a previous crash."""
     for name in doors:
-        is_moving(name)  # is_moving() removes stale locks as a side-effect
+        is_moving(name)  # side-effect: removes stale locks
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +195,10 @@ def operate(door, command, stop_event=None):
     time (or until stop_event is set, whichever comes first).
 
     stop_event: optional threading.Event.  When set, the relay is
-                de-energized immediately and the state file is NOT updated
-                (door position is unknown after an interrupted move).
+                de-energized immediately and the state file is NOT updated.
 
     Raises RuntimeError if the door is already moving.
-    Signal handlers are only installed when called from the main thread
-    (i.e. the CLI); the daemon uses stop_event instead.
+    Signal handlers are only installed when called from the main thread.
     """
     if command not in ("open", "close"):
         raise ValueError(f"Unknown command: {command!r}")
